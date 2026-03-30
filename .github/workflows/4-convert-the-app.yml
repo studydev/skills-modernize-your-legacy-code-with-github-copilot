@@ -1,0 +1,168 @@
+name: Step 4 # 앱 변환
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+env:
+  REVIEW_FILE: ".github/steps/x-review.md"
+
+jobs:
+  find_exercise:
+    name: 실습 이슈 찾기
+    uses: skills-kr/exercise-toolkit/.github/workflows/find-exercise-issue.yml@kr-v0.6.0
+
+  check_step_work:
+    name: 단계 작업 확인
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    env:
+      ISSUE_REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ needs.find_exercise.outputs.issue-number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 응답 템플릿 가져오기
+        uses: actions/checkout@v4
+        with:
+          repository: skills-kr/exercise-toolkit
+          path: exercise-toolkit
+          ref: kr-v0.6.0
+
+      - name: 마지막 댓글 찾기
+        id: find-last-comment
+        uses: peter-evans/find-comment@v3
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          direction: last
+
+      - name: 댓글 업데이트 - 작업 확인 중
+        uses: GrantBirki/comment@v2.1.1
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          comment-id: ${{ steps.find-last-comment.outputs.comment-id }}
+          file: exercise-toolkit/markdown-templates/step-feedback/checking-work.md
+          edit-mode: replace
+
+      # START: 실습 확인
+
+      - name: index.js 파일 존재 확인
+        uses: skills-kr/exercise-toolkit/actions/file-exists@kr-v0.6.0
+        continue-on-error: true
+        id: check-js-file-exists
+        with:
+          file: "src/accounting/index.js"
+
+      - name: index.js에서 credit 키워드 확인
+        id: check-credit-keyword
+        continue-on-error: true
+        uses: skills/action-keyphrase-checker@v1
+        with:
+          text-file: src/accounting/index.js
+          keyphrase: 'credit'
+          minimum-occurrences: 1
+          case-sensitive: false
+
+      - name: index.js에서 debit 키워드 확인
+        id: check-debit-keyword
+        continue-on-error: true
+        uses: skills/action-keyphrase-checker@v1
+        with:
+          text-file: src/accounting/index.js
+          keyphrase: 'debit'
+          minimum-occurrences: 1
+          case-sensitive: false
+
+      - name: 댓글 업데이트 - 단계 결과
+        uses: GrantBirki/comment@v2.1.1
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          comment-id: ${{ steps.find-last-comment.outputs.comment-id }}
+          edit-mode: replace
+          file: exercise-toolkit/markdown-templates/step-feedback/step-results-table.md
+          vars: |
+            step_number: 4
+            results_table:
+              - description: "src/accounting/index.js 파일 존재 확인"
+                passed: ${{ steps.check-js-file-exists.outcome == 'success' }}
+              - description: "src/accounting/index.js에서 credit 키워드 확인"
+                passed: ${{ steps.check-credit-keyword.outcome == 'success' }}
+              - description: "src/accounting/index.js에서 debit 키워드 확인"
+                passed: ${{ steps.check-debit-keyword.outcome == 'success' }}
+
+      # END: 실습 확인
+
+      - name: 확인 실패 시 작업 실패 처리
+        if: contains(steps.*.outcome, 'failure')
+        run: exit 1
+
+  post_review_content:
+    name: 리뷰 내용 게시
+    needs: [find_exercise, check_step_work]
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ needs.find_exercise.outputs.issue-number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 응답 템플릿 가져오기
+        uses: actions/checkout@v4
+        with:
+          repository: skills-kr/exercise-toolkit
+          path: exercise-toolkit
+          ref: kr-v0.6.0
+
+      - name: 댓글 생성 - 단계 완료 - final review next
+        uses: GrantBirki/comment@v2.1.1
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          file: exercise-toolkit/markdown-templates/step-feedback/lesson-review.md
+
+      - name: 댓글 생성 - 리뷰 내용 추가
+        uses: GrantBirki/comment@v2.1.1
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          file: ${{ env.REVIEW_FILE }}
+
+      - name: 현재 워크플로우 비활성화
+        run: gh workflow disable "${{github.workflow}}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+      - name: Workshop Tracker에 완료 보고
+        if: success()
+        continue-on-error: true
+        run: |
+          SESSION_ID=$(jq -r '.sessionId' .github/workshop-config.json)
+          TRACK=$(jq -r '.track' .github/workshop-config.json)
+          API_URL=$(jq -r '.apiUrl' .github/workshop-config.json)
+          curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d '{"sessionId": "'"$SESSION_ID"'", "type": "end", "step": 4, "description": "앱 변환 완료", "username": "'"$GITHUB_ACTOR"'", "repo": "'"$GITHUB_REPOSITORY"'", "track": "'"$TRACK"'", "runId": "'"$GITHUB_RUN_ID"'"}' || true
+
+  finish_exercise:
+    name: 실습 완료
+    needs: [find_exercise, post_review_content]
+    uses: skills-kr/exercise-toolkit/.github/workflows/finish-exercise.yml@kr-v0.6.0
+    with:
+      issue-url: ${{ needs.find_exercise.outputs.issue-url }}
+      exercise-title: "Copilot으로 레거시 코드 현대화"
